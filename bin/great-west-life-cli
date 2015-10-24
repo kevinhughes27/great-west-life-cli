@@ -1,0 +1,184 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'optparse/date'
+require 'highline/import'
+require 'capybara'
+
+options = OpenStruct.new
+options.username = ''
+options.claim_type = 'Massage Therapy'
+options.provider = ''
+options.date = Date.today.prev_day.strftime("%b %e %Y")
+options.hours = 0
+options.minutes = 30
+options.amount = 60.00
+
+CLAIM_TYPES = [
+  'Athletic Therapy',
+  'Dental',
+  'Massage Therapy',
+  'Physiotherapy',
+  'Social Worker',
+  'Chiropody',
+  'Dietician',
+  'Naturopath',
+  'Podiatry',
+  'Speech Therapy',
+  'Chiropractor',
+  'Drug',
+  'Osteopath',
+  'Psychology'
+]
+
+opt_parser = OptionParser.new do |opts|
+  opts.banner = "Usage: script.rb [options]"
+
+  opts.on("-u", "--user USER", "USER is required") do |user|
+    options.username = user
+  end
+
+  opts.on("-t", "--type CLAIM_TYPE", CLAIM_TYPES, "need to specify a claim type") do |claim_type|
+    options.claim_type = claim_type
+  end
+
+  opts.on("-p", "--provider PROVIDER", "The service provider (must exist in Great West Life already)") do |provider|
+    options.provider = provider
+  end
+
+  opts.on("-d", "--date DATE", Date, "The date of the claim") do |date|
+    options.date = date.strftime("%b %e %Y")
+  end
+
+  opts.on("-h", "--hours HOURS", "length of the visit") do |hours|
+    options.hours = hours.to_i
+  end
+
+  opts.on("-m", "--minutes MINUTES", "length of the visit") do |minutes|
+    options.minutes = minutes.to_i
+  end
+
+  opts.on("-a", "--amount AMOUNT", Float, "cost of the visit") do |amount|
+    options.amount = amount
+  end
+end
+
+opt_parser.parse!(ARGV)
+
+puts "\nOptions:"
+puts   "--------"
+options.to_h.each do |k,v|
+  puts "#{k} => #{v}"
+end
+puts ""
+
+exit unless HighLine.agree('Please review options before continuing. Continue? [Y/n]')
+password = ask("enter password to continue:  ") { |q| q.echo = "*" }
+
+
+# Login
+session = Capybara::Session.new(:selenium)
+session.visit "https://groupnet.greatwestlife.com/public/signin/login.public"
+
+session.fill_in('usernameDisplay', :with => options.username)
+session.fill_in('password', :with => password)
+session.find("img[alt='Sign In'][src='/public/signin/images/en/signin_button_submit.gif']").click
+
+
+# Navigate to claims area
+begin
+  session.find_link('Submit a claim').click
+  session.first(:link, 'Online Claim').click
+rescue => e
+  puts "Error logging in - check your username and password"
+  exit
+end
+
+
+# Step 1: Type of Claim
+puts "Step 1: Type of Claim"
+sleep 2
+session.has_content?('Select Type of Claim')
+session.has_selector?('span', text: options.claim_type)
+
+session.first('span', text: options.claim_type).click
+
+yes_spans = session.all('span', text: 'Yes')
+yes_spans[0].click # Do you want to reimburse any unpaid portion of this claim from your spending account?
+
+no_spans = session.all('span', text: 'No')
+no_spans[1].click # Is a claim being made for Worker's Compensation Benefits?
+no_spans[2].click # Has the claim been submitted to or paid in part by another group plan?
+no_spans[3].click # Was the service provided outside of Canada?
+no_spans[4].click # Is this claim for medical equipment and/or supplies?
+
+session.find_button("Next Step >>").click
+
+
+# Step 2: Provider Information
+puts "Step 2: Provider Information"
+sleep 2
+session.has_content?('Select a Provider/Clinic or Add a New Provider')
+
+begin
+  session.has_selector?('span', text: options.provider)
+  session.first('span', text: options.provider).click
+rescue => e
+  puts "Error selecting provider - are you sure you picked the right one?"
+  exit
+end
+
+session.find_button("Next Step >>").click
+
+
+# Step 3: Patient Information
+puts "Step 3: Patient Information"
+sleep 2
+session.has_content?('Enter Patient Details')
+
+no_spans = session.all('span', text: 'No')
+no_spans[0].click # Are you, or any other member of your family, entitled to benefits under any other group plan for the expenses being claimed?
+
+session.find_button("Next Step >>").click
+
+
+# Step 4: Expense Details
+puts "Step 4: Expense Details"
+sleep 2
+session.has_content?('Enter Expense Details')
+
+inputs = session.all('input')
+inputs[1].set(options.date)
+session.first('option', text: 'Subsequent Treatment').click
+inputs[2].set(options.hours)
+inputs[3].set(options.minutes)
+inputs[4].set(options.amount)
+
+no_spans = session.all('span', text: 'No')
+no_spans[0].click # Did you receive a physician's referral for this expense?
+no_spans[1].click # Is treatment required as the result of a motor vehicle accident
+
+session.find_button("Next Step >>").click
+
+
+# Step 5: Summary and Consent
+puts "Step 5: Summary and Content"
+sleep 2
+session.has_content?('Claim Summary and Consent')
+session.find('input').click # I have read and agree with the Terms & Conditions
+
+exit unless HighLine.agree('Submit the claim? [Y/n]')
+session.find_button("I Agree - Submit >>").click
+
+
+# Step 6: Finish
+sleep 2
+session.has_content?('Thank you. Your online claim has been submitted for')
+screenshot_path = ENV['HOME'] + '/' + "#{options.claim_type.downcase} - #{options.date.downcase}.png"
+session.save_screenshot(screenshot_path)
+puts "Claim Submitted."
+puts "Screenshot saved to #{screenshot_path}"
+
+# this didn't work on my latest submissions
+# not super important though since we are done
+session.find_button("I'm Done'").click
